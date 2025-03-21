@@ -1,0 +1,53 @@
+name: 翻译SystemPrompts到中文
+
+on:
+  # 允许手动触发工作流
+  workflow_dispatch:
+
+jobs:
+  translate:
+    runs-on: ubuntu-latest
+    
+    steps:
+      # 检出指定分支
+      - name: 检出仓库
+        uses: actions/checkout@v3
+        with:
+          ref: zh/SystemPrompts
+      
+      # 安装Node.js环境
+      - name: 设置Node.js环境
+        uses: actions/setup-node@v3
+        with:
+          node-version: '20'
+      
+      # 执行翻译任务
+      - name: 翻译Markdown文件
+        run: |
+          npx ai-markdown-translator -i ./SystemPrompts/ -l 中文 --openai-url https://api.302.ai/v1/chat/completions --api-key ${{ secrets.OPENAI_API_KEY_302AI }} --model claude-3-7-sonnet-latest -e md --log
+      
+      # 提交更新
+      - name: 提交翻译后的文件到仓库
+        if: success() || failure() # 无论之前步骤成功与否都尝试提交
+        continue-on-error: true  # 允许提交失败但继续执行
+        run: |
+          git config --local user.email "action@h7ml.cn"
+          git config --local user.name "GitHub Action"
+          git config advice.ignoredHook false
+          git add ./SystemPrompts/
+          git add ./log.md
+          git commit -m "翻译更新: SystemPrompts目录 $(date +%Y-%m-%d)" || echo "没有需要提交的更改"
+          git push origin zh/SystemPrompts
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # 清理工作
+      - name: 清理旧的workflow运行记录
+        if: always()  # 总是执行清理步骤
+        continue-on-error: true  # 允许清理失败但不影响整体状态
+        uses: Mattraks/delete-workflow-runs@v2
+        with:
+          token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          retain_days: 10
+          keep_minimum_runs: 6 
