@@ -147,9 +147,57 @@ def process_file(file_path, api_url, api_key, model, language="中文", output_d
         print(f"处理文件时出错 {file_path}: {e}")
         return False
 
+def test_api_connection(api_url, api_key, model, language="中文"):
+    """测试API连接和响应情况"""
+    print(f"正在测试API连接: {api_url}")
+    print(f"使用模型: {model}")
+    print(f"目标语言: {language}")
+    
+    # 创建一个简单的测试文本
+    test_text = "这是一个API测试。This is an API test."
+    
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}"
+    }
+    
+    data = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": f"你是一位翻译专家，请将以下文本翻译成{language}。"},
+            {"role": "user", "content": test_text}
+        ]
+    }
+    
+    try:
+        print("发送测试请求...")
+        response = requests.post(api_url, headers=headers, json=data)
+        print(f"API响应状态码: {response.status_code}")
+        
+        if response.status_code == 200:
+            print("API连接成功!")
+            result = response.json()
+            print("\n响应内容:")
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+            
+            if 'choices' in result and len(result['choices']) > 0:
+                translation = result['choices'][0]['message']['content']
+                print(f"\n翻译结果示例: {translation}")
+                return True
+            else:
+                print("警告: 响应中没有找到翻译内容")
+                return False
+        else:
+            print(f"错误: API返回非200状态码")
+            print(f"响应内容: {response.text}")
+            return False
+    except Exception as e:
+        print(f"测试API连接时出错: {e}")
+        return False
+
 def main():
     parser = argparse.ArgumentParser(description='将Markdown文件翻译成中文')
-    parser.add_argument('-i', '--input', type=str, required=True, help='输入文件或目录路径')
+    parser.add_argument('-i', '--input', type=str, help='输入文件或目录路径')
     parser.add_argument('-o', '--output', type=str, help='输出目录路径（默认覆盖原文件）')
     parser.add_argument('--openai-url', type=str, required=True, help='OpenAI API URL')
     parser.add_argument('--api-key', type=str, required=True, help='OpenAI API Key')
@@ -157,8 +205,47 @@ def main():
     parser.add_argument('--recursive', action='store_true', help='递归处理目录中的所有文件')
     parser.add_argument('--max-tokens', type=int, default=4000, help='每批次的最大令牌数')
     parser.add_argument('-l', '--language', type=str, default='中文', help='目标语言（默认：中文）')
+    parser.add_argument('--test', action='store_true', help='只测试API连接，不执行翻译')
+    parser.add_argument('--force', action='store_true', help='强制执行翻译，即使API测试失败')
     
     args = parser.parse_args()
+    
+    # 先测试API连接
+    if args.test:
+        print("\n===== API连接测试 =====")
+        test_result = test_api_connection(args.openai_url, args.api_key, args.model, args.language)
+        # 在测试模式下，根据API测试结果设置退出码
+        if not test_result:
+            print("API测试失败")
+            exit(1)
+        else:
+            print("API测试成功")
+            exit(0)
+        return
+
+    # 检测是否在GitHub Actions环境中运行
+    is_github_actions = os.environ.get('GITHUB_ACTIONS') == 'true'
+    
+    # 检查必要参数
+    if not args.input:
+        print("错误: 在翻译模式下，必须提供输入文件或目录路径 (-i/--input)")
+        exit(1)
+    
+    # 在正式翻译前进行API测试
+    print("\n===== API连接测试 =====")
+    if not test_api_connection(args.openai_url, args.api_key, args.model, args.language):
+        print("API测试失败")
+        # 如果不是强制执行且不在GitHub Actions环境中，询问用户是否继续
+        if not args.force and not is_github_actions:
+            confirm = input("API测试失败，是否继续? 输入 'y' 继续，其他任意键退出: ")
+            if confirm.lower() != 'y':
+                print("已取消翻译任务")
+                exit(1)
+        elif not args.force and is_github_actions:
+            print("在GitHub Actions环境中检测到API测试失败，取消翻译任务")
+            exit(1)
+        else:
+            print("强制执行翻译任务，忽略API测试失败")
     
     # 获取所有Markdown文件
     if os.path.isfile(args.input) and args.input.endswith('.md'):

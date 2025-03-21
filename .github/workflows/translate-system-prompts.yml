@@ -26,10 +26,18 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests tqdm
       
+      # 测试API连接
+      - name: 测试API连接
+        id: api_test
+        run: |
+          python .github/scripts/translate_md_to_chinese.py --test --openai-url https://api.302.ai/v1/chat/completions --api-key ${{ secrets.OPENAI_API_KEY_302AI }} --model claude-3-7-sonnet-latest
+      
       # 执行翻译任务
       - name: 翻译Markdown文件
+        if: ${{ !cancelled() }}
         run: |
-          python .github/scripts/translate_md_to_chinese.py -i ./SystemPrompts/ --openai-url https://api.302.ai/v1/chat/completions --api-key ${{ secrets.OPENAI_API_KEY_302AI }} --model claude-3-7-sonnet-latest --recursive
+          # 在GitHub Actions中跳过交互式提示
+          python .github/scripts/translate_md_to_chinese.py -i ./SystemPrompts/ --openai-url https://api.302.ai/v1/chat/completions --api-key ${{ secrets.OPENAI_API_KEY_302AI }} --model claude-3-7-sonnet-latest --recursive --force
       
       # 提交更新
       - name: 提交翻译后的文件到仓库
