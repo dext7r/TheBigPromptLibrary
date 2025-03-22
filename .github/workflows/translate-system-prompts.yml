@@ -9,11 +9,19 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
+      # 检出main分支，用于后续比较
+      - name: 检出main分支
+        uses: actions/checkout@v3
+        with:
+          ref: main
+          path: main-branch
+      
       # 检出指定分支
-      - name: 检出仓库
+      - name: 检出翻译分支
         uses: actions/checkout@v3
         with:
           ref: zh/SystemPrompts
+          path: zh-branch
       
       # 安装Python环境和依赖
       - name: 设置Python环境
@@ -29,25 +37,32 @@ jobs:
       # 测试API连接
       - name: 测试API连接
         id: api_test
+        working-directory: zh-branch
         run: |
-          python .github/scripts/translate_md_to_chinese.py --test --openai-url https://api.302.ai/v1/chat/completions --api-key ${{ secrets.OPENAI_API_KEY_302AI }} --model claude-3-7-sonnet-latest
+          python ../.github/scripts/translate_md_to_chinese.py --test --openai-url https://api.302.ai/v1/chat/completions --api-key ${{ secrets.OPENAI_API_KEY_302AI }} --model claude-3-7-sonnet-latest
       
       # 执行翻译任务
       - name: 翻译Markdown文件
         if: ${{ !cancelled() }}
+        working-directory: zh-branch
         run: |
+          # 首先复制main分支内容进行比较
+          cp -r ../main-branch/.git .
+          
           # 在GitHub Actions中跳过交互式提示
-          python .github/scripts/translate_md_to_chinese.py -i ./SystemPrompts/ --openai-url https://api.302.ai/v1/chat/completions --api-key ${{ secrets.OPENAI_API_KEY_302AI }} --model claude-3-7-sonnet-latest --recursive --force
+          python ../.github/scripts/translate_md_to_chinese.py -i ./SystemPrompts/ --openai-url https://api.302.ai/v1/chat/completions --api-key ${{ secrets.OPENAI_API_KEY_302AI }} --model claude-3-7-sonnet-latest --recursive --force
       
       # 提交更新
       - name: 提交翻译后的文件到仓库
         if: success() || failure() # 无论之前步骤成功与否都尝试提交
         continue-on-error: true  # 允许提交失败但继续执行
+        working-directory: zh-branch
         run: |
           git config --local user.email "action@h7ml.cn"
           git config --local user.name "GitHub Action"
           git config advice.ignoredHook false
           git add ./SystemPrompts/
+          git add ./translation_log.json
           git commit -m "翻译更新: SystemPrompts目录 $(date +%Y-%m-%d)" || echo "没有需要提交的更改"
           git push origin zh/SystemPrompts
         env:

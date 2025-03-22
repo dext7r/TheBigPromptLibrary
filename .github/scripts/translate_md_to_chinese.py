@@ -7,9 +7,129 @@ import json
 import requests
 import argparse
 import re
+import subprocess
 from pathlib import Path
 from tqdm import tqdm
 import time
+
+# 翻译日志路径
+TRANSLATION_LOG_FILE = "translation_log.json"
+
+def get_file_from_main_branch(file_path):
+    """获取main分支上的文件内容"""
+    try:
+        # 首先检查git命令是否可用
+        check_git = subprocess.run(
+            ["git", "--version"],
+            capture_output=True,
+            text=True,
+            check=False
+        )
+        
+        if check_git.returncode != 0:
+            print("警告: 无法执行git命令，跳过与main分支的比较")
+            return None
+            
+        # 检查当前是否在git仓库中
+        check_repo = subprocess.run(
+            ["git", "rev-parse", "--is-inside-work-tree"],
+            capture_output=True,
+            text=True,
+            check=False
+        )
+        
+        if check_repo.returncode != 0:
+            print("警告: 当前目录不是git仓库，跳过与main分支的比较")
+            return None
+            
+        # 检查main分支是否存在
+        check_main = subprocess.run(
+            ["git", "rev-parse", "--verify", "main"],
+            capture_output=True,
+            text=True,
+            check=False
+        )
+        
+        if check_main.returncode != 0:
+            print("警告: main分支不存在，尝试检查master分支")
+            # 尝试master分支
+            check_master = subprocess.run(
+                ["git", "rev-parse", "--verify", "master"],
+                capture_output=True,
+                text=True,
+                check=False
+            )
+            
+            if check_master.returncode == 0:
+                branch = "master"
+            else:
+                print("警告: 无法找到main或master分支，跳过比较")
+                return None
+        else:
+            branch = "main"
+            
+        # 获取文件内容
+        result = subprocess.run(
+            ["git", "show", f"{branch}:{file_path}"],
+            capture_output=True,
+            text=True,
+            check=False
+        )
+        
+        if result.returncode == 0:
+            return result.stdout
+        else:
+            print(f"警告: 无法获取{branch}分支上的文件内容: {file_path}")
+            if "fatal: path" in result.stderr and "does not exist" in result.stderr:
+                print(f"文件在{branch}分支上不存在")
+            else:
+                print(f"错误信息: {result.stderr}")
+            return None
+    except Exception as e:
+        print(f"获取main分支文件内容时出错: {e}")
+        return None
+
+def is_file_already_translated(file_path):
+    """检查文件是否已经被翻译过"""
+    if not os.path.exists(TRANSLATION_LOG_FILE):
+        return False
+    
+    try:
+        with open(TRANSLATION_LOG_FILE, 'r', encoding='utf-8') as f:
+            log_data = json.load(f)
+            
+        file_log = log_data.get(file_path, {})
+        # 获取文件的最后修改时间
+        last_modified = os.path.getmtime(file_path)
+        
+        # 如果文件在翻译后修改过，需要重新翻译
+        if 'last_translated' in file_log and 'last_modified' in file_log:
+            return file_log['last_modified'] >= last_modified
+            
+        return False
+    except Exception as e:
+        print(f"检查翻译日志时出错: {e}")
+        return False
+
+def update_translation_log(file_path, success=True):
+    """更新翻译日志"""
+    try:
+        log_data = {}
+        if os.path.exists(TRANSLATION_LOG_FILE):
+            with open(TRANSLATION_LOG_FILE, 'r', encoding='utf-8') as f:
+                log_data = json.load(f)
+        
+        log_data[file_path] = {
+            'last_translated': time.time(),
+            'last_modified': os.path.getmtime(file_path),
+            'success': success
+        }
+        
+        with open(TRANSLATION_LOG_FILE, 'w', encoding='utf-8') as f:
+            json.dump(log_data, f, indent=2, ensure_ascii=False)
+            
+    except Exception as e:
+        print(f"更新翻译日志时出错: {e}")
 
 def split_markdown_by_headers(text, max_tokens=4000):
     """
@@ -64,7 +184,7 @@ def translate_text(text, api_url, api_key, model="claude-3-7-sonnet-latest", lan
     data = {
         "model": model,
         "messages": [
-            {"role": "system", "content": f"你是一位专业的翻译专家，请将以下Markdown内容翻译成{language}。保持原有的Markdown格式，只翻译文本内容。代码块内的内容和URL不需要翻译。"},
+            {"role": "system", "content": f"请将以下Markdown内容翻译成{language}。保持原有的Markdown格式，只翻译文本内容。代码块内的内容和URL不需要翻译。"},
             {"role": "user", "content": text}
         ],
         "temperature": 0.3
@@ -113,9 +233,39 @@ def translate_long_text(text, api_url, api_key, model="claude-3-7-sonnet-latest"
     # 合并结果
     return "\n".join(translated_parts)
 
-def process_file(file_path, api_url, api_key, model, language="中文", output_dir=None, max_tokens=4000):
+def process_file(file_path, api_url, api_key, model, language="中文", output_dir=None, max_tokens=4000, force=False):
     """处理单个Markdown文件"""
     print(f"正在处理文件: {file_path}")
+    
+    # 检查文件是否需要翻译
+    if not force:
+        # 检查文件是否已翻译
+        if is_file_already_translated(file_path):
+            print(f"文件已翻译过，跳过: {file_path}")
+            return True
+            
+        # 获取main分支上的文件内容
+        main_content = get_file_from_main_branch(file_path)
+        
+        # 读取当前文件内容
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                current_content = f.read()
+                
+            # 如果与main分支内容相同，需要翻译
+            if main_content is not None and main_content == current_content:
+                print(f"文件与主分支内容相同，需要翻译: {file_path}")
+            else:
+                # 内容不同，检查是否为已翻译文件
+                if main_content is not None:
+                    print(f"文件与主分支内容不同，可能已翻译，跳过: {file_path}")
+                    update_translation_log(file_path, success=True)
+                    return True
+        except Exception as e:
+            print(f"读取文件内容时出错: {e}")
+            return False
+    else:
+        print(f"强制模式: 不检查文件状态，直接翻译: {file_path}")
     
     try:
         # 读取文件内容
@@ -139,12 +289,17 @@ def process_file(file_path, api_url, api_key, model, language="中文", output_d
             with open(output_path, 'w', encoding='utf-8') as f:
                 f.write(translated_content)
             print(f"已保存翻译结果到: {output_path}")
+            
+            # 更新翻译日志
+            update_translation_log(file_path, success=True)
             return True
         else:
             print(f"翻译失败: {file_path}")
+            update_translation_log(file_path, success=False)
             return False
     except Exception as e:
         print(f"处理文件时出错 {file_path}: {e}")
+        update_translation_log(file_path, success=False)
         return False
 
 def test_api_connection(api_url, api_key, model, language="中文"):
@@ -164,9 +319,10 @@ def test_api_connection(api_url, api_key, model, language="中文"):
     data = {
         "model": model,
         "messages": [
-            {"role": "system", "content": f"你是一位翻译专家，请将以下文本翻译成{language}。"},
+            {"role": "system", "content": f"请将以下文本翻译成{language}，保持原文的格式和风格。"},
             {"role": "user", "content": test_text}
-        ]
+        ],
+        "temperature": 0.3
     }
     
     try:
@@ -206,9 +362,15 @@ def main():
     parser.add_argument('--max-tokens', type=int, default=4000, help='每批次的最大令牌数')
     parser.add_argument('-l', '--language', type=str, default='中文', help='目标语言（默认：中文）')
     parser.add_argument('--test', action='store_true', help='只测试API连接，不执行翻译')
-    parser.add_argument('--force', action='store_true', help='强制执行翻译，即使API测试失败')
+    parser.add_argument('--force', action='store_true', help='强制执行翻译，即使文件已翻译过')
+    parser.add_argument('--no-git-check', action='store_true', help='不检查git仓库中的原始文件')
+    parser.add_argument('--log-file', type=str, default=TRANSLATION_LOG_FILE, help='指定翻译日志文件路径')
     
     args = parser.parse_args()
+    
+    # 更新日志文件路径
+    global TRANSLATION_LOG_FILE
+    TRANSLATION_LOG_FILE = args.log_file
     
     # 先测试API连接
     if args.test:
@@ -268,10 +430,11 @@ def main():
     # 处理每个文件
     success_count = 0
     for file_path in tqdm(md_files, desc="总体翻译进度"):
-        if process_file(file_path, args.openai_url, args.api_key, args.model, args.language, args.output, args.max_tokens):
+        if process_file(file_path, args.openai_url, args.api_key, args.model, args.language, args.output, args.max_tokens, args.force):
             success_count += 1
     
     print(f"翻译完成! 成功: {success_count}/{len(md_files)}")
+    print(f"翻译日志已保存到: {TRANSLATION_LOG_FILE}")
 
 if __name__ == "__main__":
     main() 
